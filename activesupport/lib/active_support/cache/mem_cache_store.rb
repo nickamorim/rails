@@ -136,7 +136,7 @@ module ActiveSupport
         key = normalize_key(name, options)
 
         instrument(:increment, key, amount: amount) do
-          rescue_error_with nil do
+          rescue_error_with options&.[](:failsafe) do
             @data.with { |c| c.incr(key, amount, options[:expires_in], amount) }
           end
         end
@@ -167,7 +167,7 @@ module ActiveSupport
         key = normalize_key(name, options)
 
         instrument(:decrement, key, amount: amount) do
-          rescue_error_with nil do
+          rescue_error_with options&.[](:failsafe) do
             @data.with { |c| c.decr(key, amount, options[:expires_in], 0) }
           end
         end
@@ -176,7 +176,7 @@ module ActiveSupport
       # Clear the entire cache on all memcached servers. This method should
       # be used with care when shared cache is being used.
       def clear(options = nil)
-        rescue_error_with(nil) { @data.with { |c| c.flush_all } }
+        rescue_error_with(options&.[](:failsafe)) { @data.with { |c| c.flush_all } }
       end
 
       # Get the statistics from the memcached servers.
@@ -187,11 +187,12 @@ module ActiveSupport
       private
         # Read an entry from the cache.
         def read_entry(key, **options)
-          deserialize_entry(read_serialized_entry(key, **options), **options)
+          serialized_entry = read_serialized_entry(key, **options)
+          serialized_entry == options[:failsafe] ? Entry.new(serialized_entry) : deserialize_entry(serialized_entry, **options)
         end
 
         def read_serialized_entry(key, **options)
-          rescue_error_with(nil) do
+          rescue_error_with(options&.[](:failsafe)) do
             @data.with { |c| c.get(key, options) }
           end
         end
@@ -208,7 +209,7 @@ module ActiveSupport
             # Set the memcache expire a few minutes in the future to support race condition ttls on read
             expires_in += 5.minutes
           end
-          rescue_error_with nil do
+          rescue_error_with(options&.[](:failsafe)) do
             # Don't pass compress option to Dalli since we are already dealing with compression.
             options.delete(:compress)
             @data.with { |c| !!c.send(method, key, payload, expires_in, **options) }
@@ -219,13 +220,13 @@ module ActiveSupport
         def read_multi_entries(names, **options)
           keys_to_names = names.index_by { |name| normalize_key(name, options) }
 
-          rescue_error_with({}) do
+          rescue_error_with(options&.[](:failsafe) || {}) do
             raw_values = @data.with { |c| c.get_multi(keys_to_names.keys) }
 
             values = {}
 
             raw_values.each do |key, value|
-              entry = deserialize_entry(value, raw: options[:raw])
+              entry = deserialize_entry(value, raw: options[:raw]) unless value == options&.[](:failsafe)
 
               unless entry.nil? || entry.expired? || entry.mismatched?(normalize_version(keys_to_names[key], options))
                 begin
@@ -241,7 +242,7 @@ module ActiveSupport
 
         # Delete an entry from the cache.
         def delete_entry(key, **options)
-          rescue_error_with(false) { @data.with { |c| c.delete(key) } }
+          rescue_error_with(options&.[](:failsafe) || false) { @data.with { |c| c.delete(key) } }
         end
 
         def serialize_entry(entry, raw: false, **options)
